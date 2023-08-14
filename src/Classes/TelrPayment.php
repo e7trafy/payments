@@ -42,33 +42,45 @@ class TelrPayment extends BaseController implements PaymentInterface
     public function pay($amount = null, $user_id = null, $user_first_name = null, $user_last_name = null, $user_email = null, $user_phone = null, $source = null): array
     {
         $this->setPassedVariablesToGlobal($amount,$user_id,$user_first_name,$user_last_name,$user_email,$user_phone,$source);
-        $required_fields = ['amount'];
-        $this->checkRequiredFields($required_fields, 'BINANCE');
+        $required_fields = ['amount','user_first_name','user_last_name','user_email'];
+        $this->checkRequiredFields($required_fields, 'TELR');
  
         $uniqid = uniqid().rand(1000,9999);
-        $currency = $this->currency==null?"SAR":$this->currency;
-
         $data = [
             'ivp_method' => 'create',
             'ivp_store' => $this->telr_merchant_id,
             'ivp_authkey' => $this->telr_api_key,
             'order_ref' => $uniqid,
-            'amount' => $this->amount,
-            'currency' => $currency,
+            'ivp_cart' => $uniqid,
+            'ivp_amount' => $this->amount,
+            'ivp_currency' => $this->currency??"SAR",
+            'ivp_desc'=> "Credit",
             'ivp_test'=>$this->telr_mode=="live"?false:true,
-            'return_auth'=> route($this->verify_route_name,['payment'=>"telr"]),
-            'return_decl'=> route($this->verify_route_name,['payment'=>"telr"]),
-            'return_can'=> route($this->verify_route_name,['payment'=>"telr"])
+            'return_auth'=> route($this->verify_route_name,['payment'=>"telr",'payment_id'=>$uniqid]),
+            'return_decl'=> route($this->verify_route_name,['payment'=>"telr",'payment_id'=>$uniqid]),
+            'return_can'=> route($this->verify_route_name,['payment'=>"telr",'payment_id'=>$uniqid]),
+            'bill_fname' => $this->user_first_name,
+            'bill_sname' => $this->user_last_name,
+            'bill_addr1' => "NA",
+            'bill_addr2' => "NA",
+            'bill_city' => "NA",
+            'bill_region' => "NA",
+            'bill_zip' => "NA",
+            'bill_country' => "NA",
+            'bill_email' => $this->user_email,
+            'bill_phone'=>$this->user_phone
         ];
-        $response = Http::post('https://secure.telr.com/gateway/order.json', $data)->json();
+        $response = Http::asForm()->post('https://secure.telr.com/gateway/order.json', $data)->json();
       
 
-        if(isset($response['url']))
+        if(isset($response['order']['url'])){
+            cache(['telr_ref_code_'.$uniqid => $response['order']['ref']]);
             return [
                 'payment_id'=>$uniqid,
-                'html'=>"",
-                'redirect_url'=>$response['url']
+                'html'=>$response,
+                'redirect_url'=>$response['order']['url']
             ];
+        }
         return [
             'payment_id'=>$uniqid,
             'html'=>$response,
@@ -82,21 +94,22 @@ class TelrPayment extends BaseController implements PaymentInterface
      */
     public function verify(Request $request)
     {
-        $response = $request->all();
+        if($request->ref_code==null)
+            $request->merge(['ref_code'=>cache('telr_ref_code_'.$request->payment_id)]);
+ 
         $data = [
             'ivp_method' => 'check',
             'ivp_store' => $this->telr_merchant_id,
             'ivp_authkey' => $this->telr_api_key,
-            'order_ref' => $response['order_ref'],
-            'order_amount' => $response['amount'],
+            'order_ref' => $request['ref_code'],
             'ivp_test'=>$this->telr_mode=="live"?false:true,
         ];
-        $response = Http::post('https://secure.telr.com/gateway/order.json', $data);
-        $telrHashCode = $response['code'];
-        if ($telrHashCode === $telrCallbackData['code']) {
+        $response = Http::asForm()->post('https://secure.telr.com/gateway/order.json', $data)->json();
+
+        if (isset($response['order']['status']['text']) &&  $response['order']['status']['text']="Paid") {
             return [
                 'success' => true,
-                'payment_id'=>"",
+                'payment_id'=>$request['payment_id'],
                 'message' => __('nafezly::messages.PAYMENT_DONE'),
                 'process_data' => $request->all()
             ];
